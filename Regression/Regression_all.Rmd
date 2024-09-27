@@ -1,0 +1,788 @@
+---
+title: "Portfolio Replica - Regression"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+### General steps
+
+First of all we download the necessary libraries:
+
+```{r}
+library(readxl)
+library(GGally)
+library(MASS)
+library(car)
+library(rgl)
+library(glmnet)
+library(dplyr)
+library(quantmod)
+library(writexl)
+
+rm(list = ls())
+graphics.off()
+```
+
+Then we upload our data set, be careful to change the path:
+
+```{r}
+setwd("D:/Download D/final proj")
+Data <- read_excel('InvestmentReplica.xlsx', sheet = "Replica")
+
+head(Data)
+```
+
+Then we create our two subsets, one with the assets and one with the targets:
+
+```{r}
+#define the functions to convert our data into log returns
+price2ret<- function(prices){
+  return(diff(log(prices)))
+}
+#and the other way around
+ret2price <- function(returns, start_price = 1) {
+  returns <- c(0, returns)  # Add a zero for the initial price
+  prices <- start_price * exp(cumsum(returns))
+  return(prices)
+}
+
+#Assets data set
+Assets <- subset(Data, select = -c(Date, LLL1, MXWO, MXWD, LEGATRUU, HFRXGL))
+Assets <- data.frame(
+  CO1 = price2ret(Assets$CO1),
+  DU1 = price2ret(Assets$DU1),
+  ES1 = price2ret(Assets$ES1),
+  GC1 = price2ret(Assets$GC1),
+  NQ1 = price2ret(Assets$NQ1),
+  RX1 = price2ret(Assets$RX1),
+  TP1 = price2ret(Assets$TP1),
+  TU2 = price2ret(Assets$TU2),
+  TY1 = price2ret(Assets$TY1),
+  VG1 = price2ret(Assets$VG1)
+)
+
+#Targets data set
+Targets <- subset(Data, select = c(MXWO, MXWD, LEGATRUU, HFRXGL))
+Targets <- data.frame( 
+  MXWO = price2ret(Targets$MXWO),
+  MXWD = price2ret(Targets$MXWD),
+  LEGATRUU = price2ret(Targets$LEGATRUU),
+  HFRXGL = price2ret(Targets$HFRXGL)
+)
+
+#show the first row of the data sets
+head(Assets)
+head(Targets)
+
+```
+
+Our goal is to replicate a black box index using a series of more liquid futures. We have chosen as target client a university student (age 20 – 25) and we build a monster index focused on stock market (assuming a risk-loving client persona due to the young age and the family situation).
+
+```{r}
+MonsterIndex <- Targets$MXWO * 0.8 + Targets$LEGATRUU * 0.15 + Targets$HFRXGL * 0.05
+MonsterIndex<-as.numeric(MonsterIndex)
+
+plot(Data$Date, ret2price(MonsterIndex), type = "l",xlab = "Year", ylab = "Monster Index", col = "magenta", main = "Monster Index Over Time")
+```
+
+## Correlation Matrix
+
+```{r}
+
+correlation_set<-cbind(MonsterIndex, Assets)
+correlation_matrix_A <- cor(correlation_set, use = "pairwise.complete.obs")
+
+ggplot(data= reshape2::melt(correlation_matrix_A), aes(x = Var1, y = Var2, fill = value)) + geom_tile(color = "white") + geom_text(aes(label = round(value, 2)), color = "black", size = 3) + scale_fill_gradient2(low = "white", high = "dodgerblue", mid = 'purple', midpoint = 1, limit = c(-1,1)) +theme_minimal() + theme(axis.text.x = element_text(angle = 90, hjust = 1), axis.text.y = element_text(angle = 0))
+```
+
+From this correlation matrix we can see that ES1 and NQ1 are highly correlated (\>0.9) therefore, we can say that they contribute to the variance of our data set the same way, but we wait to remove one of them as we want to explore their influence on the data more.
+
+ES1 is a future on S&P 500 and NQ1 on Nasdaq100 i.e. the index of the first 500 US companies and the first 100 US tech companies so it’s obvious that they have high correlations (most likely the Nasdaq100 companies are also in S&P500)
+
+## LINEAR REGRESSION
+
+Let's consider only a part of the data set to perform a first overview of our linear regression:
+
+```{r}
+AssetsTrain <- Assets[1:350,]
+MonsterIndexTrain <- MonsterIndex[1:350]
+
+attach(AssetsTrain)
+
+Index.lm<- lm(MonsterIndexTrain ~ RX1 + TY1 + GC1 + CO1 + VG1 + 
+                 ES1 + TP1 + DU1 + NQ1 + TU2, data=AssetsTrain)
+
+detach(AssetsTrain)
+summary(Index.lm)
+
+```
+
+From the "Residuals" of the summary we can deduct that our residuals are distributed uniformly and symmetrically around zero, hence we can think that our distribution is normal, but we will perform other tests to confirm this assumption.
+
+From the "Coefficients" we could see that the t-test is testing how relevant our coefficients are. For smalller values of the p-value we get more significant assets.
+
+In the end looking at the " R-squared" and "Adjusted R-squared" we get a high value, hence our model might overfit, since with a value equal to 1 we are in fact interpolating our data.
+
+Now we print the VIF:
+
+```{r}
+vif(Index.lm)
+# Rule of thumb -> problem when VIF exceeds 10 (or 5 sometimes)
+# VIF > 5/10
+```
+
+As we expected from the correlation matrix we have a high value of VIF both for NQ1 and ES1, which are correlated as we saw before. This creates in our linear model a problem of collinearity, which can be solved through more complex regression models such as PCA regression, Lasso or Elastic Net.
+
+We want to perform the residuals analysis to see if the assumptions for performing linear models are valid:
+
+```{r}
+par(mfrow=c(2,2))
+plot(Index.lm)
+```
+
+Let's discuss the different graphs:
+
+1.  The distribution of the Residuals doesn't follow a particular distribution, thus we can assume homoscedasticity;
+2.  The QQ plot shows that there are only a few outliers that don't follow perfectly the normal distribution, but since the majority of our points lays on the theoretical quantile we can assume normality;
+3.  The interpretation of this plot is more or less the same as the first one, since we don't have any particular distribution we can assume homoscedasticity;
+4.  The dashed line indicates the Cook's distance, since all our residuals fall inside this region we can say that there are no leverage point.
+
+Through this analysis we can say that the assumptions of our linear regression are verified.
+
+Prediction of the Train set:
+
+```{r}
+X<-predict(Index.lm, AssetsTrain)
+
+plot(Data$Date[1:351], ret2price(X), type = "l", col = "purple", ylim = c(0.4, 1.2), ylab = "Price", xlab = "Year")
+lines(Data$Date[1:351],ret2price(MonsterIndexTrain), type = "l", col = "magenta")
+legend("topleft", legend = c("MonsterIndex", "ret2price(X)"), col = c("magenta", "purple"), lty = 1)
+title("Replica (ML-based sparse clone) vs target")
+```
+
+#### Back testing the model
+
+Now we perform the rolling window and print our output.
+
+```{r}
+# 1. simple linear model
+rollingWindow = 156 # in weeks (52 = 1Y, 104 = 2Y...)
+n = dim(Assets)[1]
+i = 1
+b <- numeric(0)
+r <- 0
+endSample <- 0
+res <- c()
+bres <- c()
+AssetsMatrix <- model.matrix(MonsterIndex ~ RX1 + TY1 + GC1 + CO1 + ES1 + VG1 + NQ1 + TP1 + DU1 + TU2, data=Assets) [,-1]
+
+while (endSample < n-1) {
+  startSample <- i
+  endSample <- i + rollingWindow - 1
+  X <- Assets[startSample:endSample,]
+  y <- MonsterIndex[startSample:endSample]
+  
+  Index.lm <- lm(y ~ RX1 + TY1 + GC1 + CO1 + ES1 + VG1 + 
+                 NQ1 + TP1 + DU1 + TU2, data=X)
+  
+  b <- Index.lm$coefficients
+  
+  bres <- rbind(bres,b)
+  B0 <- b[1]
+  
+  r <- B0 + AssetsMatrix[endSample+1,] %*% b[2:11]
+  res <- c(res,r)
+  
+  i = i+1;
+}
+
+sum.lm <- summary(Index.lm)
+
+start_index <- rollingWindow + 1
+MonsterIndex_prices <- ret2price(MonsterIndex[start_index:n])
+predicted_prices <- ret2price(res)
+
+plot(Data$Date[1:549], MonsterIndex_prices, type = "l", col = "magenta", ylim = c(0.9, 2.2), ylab = "Price", xlab = "Year")
+lines(Data$Date[1:549],predicted_prices, type = "l", col = "purple")
+legend("topleft", legend = c("MonsterIndex", "Linear model with rolling window"), col = c("magenta", "purple"), lty = 1)
+title("Replica (ML-based sparse clone) vs target")
+```
+
+#### Computing indices
+
+```{r}
+# Computing MSE
+MSE <- mean((MonsterIndex_prices - predicted_prices)^2)
+MSE
+```
+
+```{r}
+# (annualized) standard deviation of Tracking Error
+TE = predicted_prices - MonsterIndex_prices
+TEV <- sd(TE)*sqrt(52) # 52 means a year
+TEV
+```
+
+```{r}
+# annualized mean Excess Return
+logRClone <- diff(log(predicted_prices))
+logRTarget = diff(log(MonsterIndex_prices));
+logTE =  logRClone - logRTarget;
+meanTRTarget = exp(mean(logRTarget)*52) - 1
+meanTRClone = exp(mean(logRClone)*52) - 1
+meanER = exp(mean(logTE)*52) - 1
+
+IR = meanER/TEV
+IR
+```
+
+```{r}
+# TurnOver
+bres <- bres[,2:11]
+Turnover = rowSums(abs(diff(bres)))/2 # weekly turnover
+meanTurnover = mean(Turnover)*52 # average annual turnover
+meanTurnover
+```
+
+```{r}
+tradingCosts = 0.001; #transaction costs (hp: buyCosts=sellCost)
+meanTradingCosts = meanTurnover*tradingCosts
+meanTradingCosts
+```
+
+```{r}
+Linear.Index <- cbind(MSE, TEV, meanTRTarget,meanTRClone,meanER, IR, meanTurnover, meanTradingCosts)
+Linear.Index
+```
+
+## PCA REGRESSION
+
+First of all let's look at the distribution through box plots:
+
+```{r}
+boxplot(Assets, main = "Boxplot of the variables", col="purple")
+```
+
+Then we compute the PCA:
+
+```{r}
+PC <- princomp(Assets, scores=T)
+summary(PC)
+
+```
+
+Here we can look at the proportion of variability explained by the PC
+
+```{r}
+layout(matrix(c(2, 3, 1, 3), 2, byrow = TRUE))
+  
+# Variance explained by the principal components
+plot(PC, las = 2, main = 'Principal components', ylim = c(0, 0.008))
+  
+  # Variances of original variables
+barplot(sapply(Assets, sd)^2, las = 2, main = 'Original Variables', ylim = c(0, 0.005),
+          ylab = 'Variances')
+  
+  # Plot contribution to the total variance by number of components
+plot(cumsum(PC$sd^2) / sum(PC$sd^2), type = 'b', axes = FALSE,
+       xlab = 'Number of components', ylab = 'Contribution to the total variance', ylim = c(0, 1))
+abline(h = 1, col = 'blue')
+abline(h = 0.90, lty = 2, col = 'blue')
+box()
+axis(2, at = 0:10/10, labels = 0:10/10)
+axis(1, at = 1:ncol(Assets), labels = 1:ncol(Assets), las = 2)
+  
+par(mfrow = c(1, 1))
+```
+
+The first plot show us the variability explained by each variable in the first Principal Component, while the second one is the proportion of variability by each Principal Component, as we have exactly seen in the computation of the components and their variability.
+
+The third plot allows us to choose the correct number of principal component. As we can see by take care of three PC we are able to explain approximately the 90% of the variability, while with four PC almost the 95%, that is the number that we will choose to conduce our analysis.
+
+```{r}
+#Plot of the loading among the first four PC
+loadPC<-PC$loadings
+par(mfrow = c(2, 1), oma = c(1, 1, 1, 1), mar = c(2, 2, 2, 1))
+for(i in 1:4) barplot(loadPC[,i], ylim = c(-1, 1), col="pink",  main = paste("Principal component", i))
+print(loadPC)
+```
+
+A first primary consideration that we have done is that on this component there are some variables that clearly are not influential in our model, in terms of variability, those are for instance DU1, RX1, TU2 and TY1. This might be the case in which those futures are low volatility, as a consequence after appropriate transformation we will remove it.
+
+Linear model with the PC:
+
+```{r}
+score1.PC<-PC$score[,1]
+score2.PC<-PC$score[,2]
+score3.PC<-PC$score[,3]
+score4.PC<-PC$score[,4]
+
+fm.pc<-lm(MonsterIndex  ~ score1.PC + score2.PC + score3.PC + score4.PC)
+
+summary(fm.pc)
+```
+
+## CONSIDERATIONS ON PCA REGRESSION
+
+As a result we have transform our data. Now we are projecting the covariates along the principal component, consequently we will obtain the following linear model.
+
+Y= β_0+β_1*PC_1+β_2*PC_2+β_3*PC_3+β_4*PC_4+ε
+
+Clearly, in this way, the model is not interpretable, therefore we retransform our data with our preexisting variables.
+
+e_ij: represents the component of the eigenvectors that maximizes the the variability
+
+mu_i: represents the mean for each covariates.
+
+![](Immagine%20WhatsApp%202024-05-31%20ore%2016.50.37_2173a386.jpg)
+
+The resulting model, by grouping some coefficients, is the following:
+
+![](images/Immagine%20WhatsApp%202024-05-31%20ore%2016.52.27_25644042.jpg)
+
+The coefficients that multiply our covariates are significantly different from the previous and are computed in such a way that the variability of our model is maximized.
+
+Moreover, if look at the red one, we can remember that in the plot of the scores, these are the one that are not influential in terms of variability, therefore we could remove it.
+
+Below is reported the linear model with all the previous considerations in matrix form for simplicity:
+
+```{r}
+m = sapply(Assets,mean)
+b0 = coefficients(fm.pc)[1] - coefficients(fm.pc)[2:5]%*%t(PC$load[, 1:4])%*%m
+b = PC$load[,1:4]%*%coefficients(fm.pc)[2:5]
+
+print(b0)
+print(b)
+```
+
+Result of our PCA-regression:
+
+```{r}
+AssetsMatrix<- as.matrix(Assets)
+b0_vector <- rep(b0, 704)
+
+# 2. PCA-model
+Xpred =  b0_vector + AssetsMatrix %*% b
+  
+plot(Data$Date, ret2price(MonsterIndex), type = "l", col = "magenta", ylim = c(0.4, 1.8), ylab = "Price", xlab = "Year")
+lines(Data$Date, ret2price(Xpred), type = "l", col = "purple")
+legend("topleft", legend = c("MonsterIndex", "PCA-regression"), col = c("magenta", "purple"), lty = 1)
+title("Replica (ML-based sparse clone) vs target")
+```
+
+```{r}
+
+attach(Assets)
+
+# Model with PCA consideration
+Index.lm2 <- lm(MonsterIndex ~ GC1 + CO1 + ES1 + VG1 + NQ1 + TP1 )
+
+detach(Assets)
+summary(Index.lm2)
+```
+
+#### Back testing the model
+
+Now, as before, we perform the rolling window to capture some estimation of goodness of our model.
+
+```{r}
+rollingWindow = 156 # in weeks (52 = 1Y, 104 = 2Y...)
+n = dim(Assets)[1]
+i = 1
+b <- numeric(0)
+r <- 0
+endSample <- 0
+res <- c()
+bres <- c()
+AssetsMatrix<- model.matrix(MonsterIndex ~ GC1 + ES1 + VG1 + TP1, data=Assets) [,-1]
+
+while (endSample < n-1) {
+  startSample <- i
+  endSample <- i + rollingWindow - 1
+  X <- Assets[startSample:endSample,]
+  y <- MonsterIndex[startSample:endSample]
+  
+  Index.lm4 <- lm(y ~ GC1 + ES1 + VG1 + TP1, data = X)
+  
+  b <- Index.lm4$coefficients
+  bres <- rbind(bres,b)
+  B0 <- b[1]
+  
+  r <- B0 + AssetsMatrix[endSample+1,] %*% b[2:5]
+  res <- c(res,r)
+  
+  i = i+1;
+}
+
+sum.lm4 <- summary(Index.lm4)
+
+start_index <- rollingWindow + 1
+MonsterIndex_prices <- ret2price(MonsterIndex[start_index:n])
+predicted_prices <- ret2price(res)
+
+plot(Data$Date[1:549], MonsterIndex_prices, type = "l", col = "magenta", ylim = c(0.9, 2.2), ylab = "Price", xlab = "Year")
+lines(Data$Date[1:549], predicted_prices, type = "l", col = "purple")
+legend("topleft", legend = c("MonsterIndex", "PCA-regression with rolling window"), col = c("magenta", "purple"), lty = 1)
+title("Replica (ML-based sparse clone) vs target")
+```
+
+#### Computing indices
+
+```{r}
+# Computing MSE
+MSE <- mean((MonsterIndex_prices - predicted_prices)^2)
+MSE
+```
+
+```{r}
+# (annualized) standard deviation of Tracking Error
+TE = predicted_prices - MonsterIndex_prices
+TEV <- sd(TE)*sqrt(52) # 52 means a year
+TEV
+```
+
+```{r}
+# annualized mean Excess Return
+logRClone <- diff(log(predicted_prices))
+logRTarget = diff(log(MonsterIndex_prices));
+logTE =  logRClone - logRTarget;
+meanTRTarget = exp(mean(logRTarget)*52) - 1
+meanTRClone = exp(mean(logRClone)*52) - 1
+meanER = exp(mean(logTE)*52) - 1
+
+IR = meanER/TEV
+IR
+```
+
+```{r}
+# TurnOver
+bres <- bres[,2:5]
+Turnover = rowSums(abs(diff(bres)))/2 # weekly turnover
+meanTurnover = mean(Turnover)*52 # average annual turnover
+meanTurnover
+```
+
+```{r}
+tradingCosts = 0.001; #transaction costs (hp: buyCosts=sellCost)
+meanTradingCosts = meanTurnover*tradingCosts
+meanTradingCosts
+```
+
+```{r}
+PCA.Index <- cbind(MSE,TEV,meanTRTarget,meanTRClone,meanER,IR,meanTurnover, meanTradingCosts)
+PCA.Index
+```
+
+## LASSO REGRESSION
+
+Lasso regression is a good way to perform a variable selection and to obtain an optimal linear model.
+
+```{r}
+x <- model.matrix(MonsterIndexTrain ~ RX1 + TY1 + GC1 + CO1 + ES1 + VG1 + 
+                 NQ1 + TP1 + DU1 + TU2, data=AssetsTrain) [,-1]
+
+lambda.grid <- 10^seq(-1, -5, length=100)
+fit.lasso <- glmnet (x, MonsterIndexTrain, lambda = lambda.grid )
+
+cv.lasso <- cv.glmnet(x,MonsterIndexTrain,lambda=lambda.grid) 
+
+bestlam.lasso <- cv.lasso$lambda.min
+optlam.lasso <- cv.lasso$lambda.1se
+
+plot(cv.lasso, col="purple")
+abline(v=log(bestlam.lasso), lty=1, col="magenta" )
+abline(v=log(optlam.lasso), lty=1, col="blue")
+
+```
+
+In this plot we see the *best lambda* and the *optimal lambda*.
+
+The 1^st^ one corresponds to the value of lambda that gives minimum "mean square error".
+
+The `2nd` correspond to the largest value of lambda such that error is within 1 standard error of the minimum.
+
+It is a general rule that usually we take the value of lambda for which the its value (red point) is still inside the boundary of the smallest mean-squared error.
+
+```{r}
+par(mfrow=c(1,1))
+plot(fit.lasso, xvar='lambda',label=TRUE, col = rainbow(dim(x)[2]))
+abline(v=log(bestlam.lasso), lty=1, col="magenta" )
+abline(v=log(optlam.lasso), lty=1, col="blue")
+legend('topright', dimnames(x)[[2]], col =  rainbow(dim(x)[2]), lty=1, cex=1)
+```
+
+With our choice of lambda there are variables that will be cut off from our model. This procedure will be performed automatically in the backtracking.
+
+```{r}
+# Get the coefficients for the optimal lambda
+coef.lasso <- predict(fit.lasso, s=bestlam.lasso, type = 'coefficients')[1:11,]
+coef.lasso
+```
+
+```{r}
+b0.lasso = coef.lasso[1]
+b.lasso <- numeric(0)
+for(i in 2:11) b.lasso[i-1] = coef.lasso[i]
+Xlasso = b0.lasso + x %*% b.lasso
+
+plot(Data$Date[1:351], ret2price(MonsterIndexTrain), type = "l", col = "magenta", ylim = c(0.4, 1.2), ylab = "Price", xlab = "Year")
+lines(Data$Date[1:351], ret2price(Xlasso), type = "l", col = "purple")
+legend("topleft", legend = c("MonsterIndex", "Lasso regression"), col = c("magenta", "purple"), lty = 1)
+title("Replica (ML-based sparse clone) vs target")
+```
+
+#### Back testing the model
+
+```{r}
+rollingWindow = 156 # in weeks (52 = 1Y, 104 = 2Y...)
+n = dim(Assets)[1]
+i = 1
+r <- 0
+endSample = 0
+res <- c()
+bres <- c()
+lambda.grid <- 10^seq(-1, -5, length=100)
+x <- model.matrix(MonsterIndex ~ RX1 + TY1 + GC1 + CO1 + ES1 + VG1 + 
+                 NQ1 + TP1 + DU1 + TU2, data=Assets) [,-1]
+
+options(warn = -1)
+while (i + rollingWindow - 1 < n-1) {
+  startSample = i
+  endSample = i + rollingWindow - 1
+  
+  XX <- x[startSample:endSample,]
+  y <- MonsterIndex[startSample:endSample]
+  
+  fit.lasso <- glmnet (XX, y, lambda = lambda.grid, alpha = 1 )
+  cv.lasso <- cv.glmnet(XX,y,lambda=lambda.grid, alpha = 1) 
+
+  bestlam.lasso <- cv.lasso$lambda.min
+  optlam.lasso <- cv.lasso$lambda.1se
+  lam = (bestlam.lasso + optlam.lasso)/2
+  
+  b <- predict(fit.lasso, s=lam, type = 'coefficients')[1:11,]
+  bres <- rbind(bres,b)
+  
+  if (endSample + 1 <= n) {
+    r <- b[1] + x[endSample + 1, ] %*% b[2:11]
+    res <- c(res, r)
+  }
+  
+  i = i+1;
+}
+options(warn = 0)
+
+start_index <- rollingWindow + 1
+MonsterIndex_prices <- ret2price(MonsterIndex[start_index:(n-1)])
+predicted_prices <- ret2price(res)
+
+plot(Data$Date[1:548], MonsterIndex_prices, type = "l", col = "magenta", ylim = c(0.9, 2.2), ylab = "Price", xlab = "Year")
+lines(Data$Date[1:548], predicted_prices, type = "l", col = "purple")
+legend("topleft", legend = c("MonsterIndex", "Lasso regression with rolling window"), col = c("magenta", "purple"), lty = 1)
+title("Replica (ML-based sparse clone) vs target")
+```
+
+```{r}
+# Computing MSE
+MSE <- mean((MonsterIndex_prices - predicted_prices)^2)
+MSE
+```
+
+```{r}
+# (annualized) standard deviation of Tracking Error
+TE = predicted_prices - MonsterIndex_prices
+TEV <- sd(TE)*sqrt(52) # 52 means a year
+TEV
+```
+
+```{r}
+# annualized mean Excess Return
+logRClone <- diff(log(predicted_prices))
+logRTarget = diff(log(MonsterIndex_prices));
+logTE =  logRClone - logRTarget;
+meanTRTarget = exp(mean(logRTarget)*52) - 1
+meanTRClone = exp(mean(logRClone)*52) - 1
+meanER = exp(mean(logTE)*52) - 1
+
+IR = meanER/TEV
+IR
+```
+
+```{r}
+#TurnOver
+bres <- bres[,2:11]
+Turnover = rowSums(abs(diff(bres)))/2 # weekly turnover
+meanTurnover = mean(Turnover)*52 # average annual turnover
+meanTurnover
+```
+
+```{r}
+tradingCosts = 0.001; #transaction costs (hp: buyCosts=sellCost)
+meanTradingCosts = meanTurnover*tradingCosts
+```
+
+```{r}
+LASSO.Index <- cbind(MSE,TEV,meanTRTarget,meanTRClone,meanER,IR,meanTurnover, meanTradingCosts)
+LASSO.Index
+```
+
+## ELASTIC NET
+
+Elastic net is another good choice to make variable selection and to perform the linear model. In fact this is the combination of the Lasso model and the RIdge one. Both of them forced the coefficients of our linear model to be zero and as a consequence reducing the dimension to get a more flexible model.
+
+```{r}
+x <- model.matrix(MonsterIndexTrain ~ RX1 + TY1 + GC1 + CO1 + ES1 + VG1 + 
+                 NQ1 + TP1 + DU1 + TU2, data=AssetsTrain) [,-1]
+
+lambda.grid <- 10^seq(-1, -5, length=100)
+fit.EN <- glmnet (x, MonsterIndexTrain, lambda = lambda.grid, alpha=0.5 )
+
+cv.EN <- cv.glmnet(x,MonsterIndexTrain,lambda=lambda.grid, alpha=0.5) 
+
+bestlam.EN <- cv.EN$lambda.min
+optlam.EN <- cv.EN$lambda.1se
+
+plot(cv.EN, col="purple")
+abline(v=log(bestlam.EN), lty=1, col="magenta" )
+abline(v=log(optlam.EN), lty=1, col="blue")
+
+```
+
+For the choice of the lambda there is an analogus procedure followed in the Lasso Regression.
+
+```{r}
+par(mfrow=c(1,1))
+plot(fit.EN, xvar='lambda',label=TRUE, col = rainbow(dim(x)[2]))
+abline(v=log(bestlam.EN), lty=1, col="magenta" )
+abline(v=log(optlam.EN), lty=1, col="blue")
+legend('topright', dimnames(x)[[2]], col =  rainbow(dim(x)[2]), lty=1, cex=1)
+```
+
+```{r}
+coef.EN <- predict(fit.EN, s=bestlam.EN, type = 'coefficients')[1:11,]
+coef.EN
+```
+
+Our model with the Elastic Net:
+
+```{r}
+b0.EN = coef.EN[1]
+b.EN <- numeric(0)
+for(i in 2:11) b.EN[i-1] = coef.EN[i]
+XEN = b0.EN + x %*% b.EN
+
+plot(Data$Date[1:351], ret2price(MonsterIndexTrain), type = "l", col = "magenta", ylim = c(0.4, 1.3), ylab = "Price", xlab = "Year")
+lines(Data$Date[1:351], ret2price(XEN), type = "l", col = "purple")
+legend("topleft", legend = c("MonsterIndex", "Elastic Net"), col = c("magenta", "purple"), lty = 1)
+title("Replica (ML-based sparse clone) vs target")
+```
+
+#### Back testing the model
+
+```{r}
+rollingWindow = 156 # in weeks (52 = 1Y, 104 = 2Y...)
+n = dim(Assets)[1]
+i = 1
+r <- 0
+endSample = 0
+res <- c()
+bres <- c()
+lambda.grid <- 10^seq(-1, -5, length=100)
+x <- model.matrix(MonsterIndex ~ RX1 + TY1 + GC1 + CO1 + ES1 + VG1 + 
+                 NQ1 + TP1 + DU1 + TU2, data=Assets) [,-1]
+
+options(warn = -1)
+while (i + rollingWindow - 1 < n-1) {
+  startSample = i
+  endSample = i + rollingWindow - 1
+  
+  XX <- x[startSample:endSample,]
+  y <- MonsterIndex[startSample:endSample]
+  
+  fit.EN <- glmnet (x, MonsterIndex, alpha = 0.5, lambda = lambda.grid )
+  cv.EN <- cv.glmnet(x,MonsterIndex, alpha = 0.5, lambda=lambda.grid)
+  
+  bestlam.EN <- cv.EN$lambda.min
+  
+  b <- predict(fit.EN, s=bestlam.EN, type = 'coefficients')[1:11,]
+  bres <- rbind(bres,b)
+  
+  if (endSample + 1 <= n) {
+    r <- b[1] + x[endSample + 1, ] %*% b[2:11]
+    res <- c(res, r)
+  }
+  
+  i = i+1;
+}
+options(warn = 0)
+
+start_index <- rollingWindow + 1
+MonsterIndex_prices <- ret2price(MonsterIndex[start_index:(n-1)])
+predicted_prices <- ret2price(res)
+
+plot(Data$Date[1:548], MonsterIndex_prices, type = "l", col = "magenta", ylim = c(0.9, 2.2), ylab = "Price", xlab = "Year")
+lines(Data$Date[1:548], predicted_prices, type = "l", col = "purple")
+legend("topleft", legend = c("MonsterIndex", "Previsione Elastic Net with rolling window"), col = c("magenta", "purple"), lty = 1)
+title("Replica (ML-based sparse clone) vs target")
+```
+
+#### Computing indices
+
+```{r}
+# Computing MSE
+MSE <- mean((MonsterIndex_prices - predicted_prices)^2)
+MSE
+```
+
+```{r}
+# (annualized) standard deviation of Tracking Error
+TE = predicted_prices - MonsterIndex_prices
+TEV <- sd(TE)*sqrt(52) # 52 means a year
+TEV
+```
+
+```{r}
+# annualized mean Excess Return
+logRClone <- diff(log(predicted_prices))
+logRTarget = diff(log(MonsterIndex_prices));
+logTE =  logRClone - logRTarget;
+meanTRTarget = exp(mean(logRTarget)*52) - 1
+meanTRClone = exp(mean(logRClone)*52) - 1
+meanER = exp(mean(logTE)*52) - 1
+
+IR = meanER/TEV
+IR
+```
+
+```{r}
+# TurnOver
+bres <- bres[,2:11]
+Turnover = rowSums(abs(diff(bres)))/2 # weekly turnover
+meanTurnover = mean(Turnover)*52 # average annual turnover
+meanTurnover
+
+```
+
+```{r}
+tradingCosts = 0.001; #transaction costs (hp: buyCosts=sellCost)
+meanTradingCosts = meanTurnover*tradingCosts
+meanTradingCosts
+```
+
+```{r}
+EN.Index <- cbind(MSE,TEV,meanTRTarget,meanTRClone,meanER,IR,meanTurnover, meanTradingCosts)
+EN.Index
+```
+
+### FINAL COMPARISON BETWEEN INDICES
+
+```{r}
+name.indexes <- rbind("Linear","PCA","Lasso","Ridge")
+Indexes.Matrix <- rbind(Linear.Index, PCA.Index, LASSO.Index, EN.Index)
+Indexes.Matrix <- as.data.frame(Indexes.Matrix)
+Indexes.Matrix <- cbind(name.indexes,Indexes.Matrix)
+Indexes.Matrix
+```
