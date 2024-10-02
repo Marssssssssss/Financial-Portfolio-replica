@@ -1,8 +1,9 @@
-The PowerPoint is saved both in PDF and PPT format. The PDF is more fluid, but the PowerPoint is recommended since it contains an animation, which can also be found in the MatLab file for the Kalman Filter weights.
+# **Financial Portfolio Replica**
 
-It is recommended to read in the following order:
+This repository provides a set of tools for replicating a **financial portfolio** using data analysis, regression models, and dynamic weighting via a Kalman Filter.
 
-1)  Data Exploration - Python file (Jupyter), a simple data exploration;
-2)  Regression_all - file available in both HTML (for quick reading) and R Notebook for better visualization. All regressions are included with very detailed explanations, diving deeper into the parameter choices than what is covered in the PowerPoint;
-3)  Kalman Filter - MatLab Live Script file, with more depth than the PowerPoint alone. NOTE: the replica .mat file is required;
-4)  Interface - Python file. We did not consider a notebook necessary since you just need to run it to display the interface. It is recommended to install the necessary libraries beforehand.
+## **Project Features:**
+1. **Data Exploration**: Python Jupyter notebook for simple data exploration and initial analysis.
+2. **Regression Analysis**: Files available in both **HTML** and **R Notebook** formats, offering a deep dive into the regressions, with detailed explanations of parameter choices.
+3. **Kalman Filter**: A **MATLAB Live Script** implementing a Kalman Filter to adjust portfolio weights dynamically. Requires the `.mat` file to execute.
+4. **Interface**: A Python file that displays the interface. No notebook required—just run the file after installing the necessary libraries.
